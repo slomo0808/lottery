@@ -1,0 +1,100 @@
+package bootstrap
+
+import (
+	"github.com/kataras/iris"
+	"github.com/kataras/iris/middleware/logger"
+	"github.com/kataras/iris/middleware/recover"
+	"lottery/conf"
+	"lottery/cron"
+	"time"
+)
+
+type Configurator func(bootstrapper *Bootstrapper)
+
+type Bootstrapper struct {
+	*iris.Application
+	AppName     string
+	AppOwner    string
+	AppSpawDate time.Time
+}
+
+func New(name, owner string, cfgs ...Configurator) *Bootstrapper {
+	b := &Bootstrapper{
+		Application: iris.New(),
+		AppName:     name,
+		AppOwner:    owner,
+		AppSpawDate: time.Now(),
+	}
+
+	for _, c := range cfgs {
+		c(b)
+	}
+
+	return b
+}
+
+// 加载html模板
+func (b *Bootstrapper) SetupView(viewDir string) {
+	htmlEngine := iris.HTML(viewDir, ".html").Layout("shared/layout.html").Reload(true)
+	htmlEngine.AddFunc("FromUnixtimeShort", func(t int) string {
+		dt := time.Unix(int64(t), 0)
+		return dt.Format(conf.SysTimeFormShort)
+	})
+	htmlEngine.AddFunc("FromUnixtime", func(t int) string {
+		dt := time.Unix(int64(t), 0)
+		return dt.Format(conf.SysTimeForm)
+	})
+	b.RegisterView(htmlEngine)
+}
+
+// 错误处理
+func (b *Bootstrapper) SetupErrHandler() {
+	b.OnAnyErrorCode(func(ctx iris.Context) {
+		err := iris.Map{
+			"app":     b.AppName,
+			"status":  ctx.GetStatusCode(),
+			"message": ctx.Values().GetString("message"),
+		}
+		if jsonOutput := ctx.URLParamExists("json"); jsonOutput {
+			ctx.JSON(err)
+		}
+		ctx.ViewData("Err", err)
+		ctx.ViewData("Title", "Error")
+		ctx.View("shared/error.html")
+	})
+}
+
+func (b *Bootstrapper) Configure(cs ...Configurator) {
+	for _, c := range cs {
+		c(b)
+	}
+}
+
+func (b *Bootstrapper) SetupCron() {
+	cron.ConfigureAppOneCron()
+}
+
+const (
+	StaticAssets = "./public/"
+	Favicon      = "favicon.ico"
+)
+
+func (b *Bootstrapper) Bootstrap() *Bootstrapper {
+	b.SetupView("./views")
+
+	b.SetupErrHandler()
+
+	b.Favicon(StaticAssets + Favicon)
+	b.StaticWeb(StaticAssets[1:], StaticAssets)
+
+	b.SetupCron()
+
+	b.Use(recover.New())
+	b.Use(logger.New())
+
+	return b
+}
+
+func (b *Bootstrapper) Listen(addr string, cfgs ...iris.Configurator) {
+	b.Run(iris.Addr(addr), cfgs...)
+}
